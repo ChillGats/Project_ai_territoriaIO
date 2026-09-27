@@ -18,7 +18,7 @@ def process_action(state, player_obj, action):
         CombatEngine.start_attack(state, player_obj.id, target_x, target_y, pct)
 
 if __name__ == "__main__":
-    MAP_W, MAP_H = 600, 600
+    MAP_W, MAP_H = 1200, 800
     SCALE = 1
     
     renderer = Renderer(MAP_W, MAP_H, scale=SCALE)
