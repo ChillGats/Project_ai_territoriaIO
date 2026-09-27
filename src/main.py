@@ -17,6 +17,7 @@ def process_action(state, renderer, player_obj, action):
     elif atype == "attack":
         tx, ty = action[1], action[2]
         pct = state.players[player_obj.id].attack_percentage
+        renderer.add_attack_marker(tx, ty)
         CombatEngine.start_attack(state, player_obj.id, tx, ty, pct)
 
     # "zoom" est géré directement par la caméra dans HumanPlayer

@@ -136,9 +136,8 @@ class Renderer:
         self.screen = pygame.display.set_mode((self.WIN_W, self.WIN_H))
         pygame.display.set_caption("Territorial.io Clone")
         
-        # Zone de la carte = toute la fenêtre (les UI sont en overlay)
-        map_h = self.WIN_H - self.BAR_H
-        self.camera = Camera(world_w, world_h, 0, 0, self.WIN_W, map_h)
+        # Zone de la carte = toute la fenêtre
+        self.camera = Camera(world_w, world_h, 0, 0, self.WIN_W, self.WIN_H)
         
         # Fonts (style proche du jeu original)
         self.f_tiny   = pygame.font.SysFont("Arial", 11)
@@ -160,8 +159,15 @@ class Renderer:
         # Messages flottants (bas-droit)
         self._messages = []
         
+        # Marqueurs d'attaque (x_monde, y_monde, temps)
+        self._attack_markers = []
+        
     def add_message(self, msg):
         self._messages.append((msg, pygame.time.get_ticks()))
+
+    def add_attack_marker(self, wx, wy):
+        if wx is not None and wy is not None:
+            self._attack_markers.append((wx, wy, pygame.time.get_ticks()))
 
     def get_map_font(self, size):
         size = max(9, min(80, size))
@@ -221,7 +227,7 @@ class Renderer:
 
     def _render_map(self, game_state):
         cam = self.camera
-        map_area = pygame.Rect(0, 0, self.WIN_W, self.WIN_H - self.BAR_H)
+        map_area = pygame.Rect(0, 0, self.WIN_W, self.WIN_H)
         
         world_surf = self._build_map_surface(game_state)
         
@@ -239,7 +245,7 @@ class Renderer:
 
     def _render_labels(self, game_state):
         cam = self.camera
-        map_area = pygame.Rect(0, 0, self.WIN_W, self.WIN_H - self.BAR_H)
+        map_area = pygame.Rect(0, 0, self.WIN_W, self.WIN_H)
         old_clip = self.screen.get_clip()
         self.screen.set_clip(map_area)
         
@@ -285,47 +291,52 @@ class Renderer:
         row_h = 22
         h = 30 + len(players) * row_h
         
+        # Panel
+        bx, by = 15, 15
         bg = pygame.Surface((self.LB_W, h), pygame.SRCALPHA)
-        bg.fill((10, 12, 22, 215))
-        self.screen.blit(bg, (0, 0))
+        bg.fill((30, 30, 30, 200))
+        self.screen.blit(bg, (bx, by))
         
         # Titre "LEADERBOARD"
-        pygame.draw.rect(self.screen, (25, 30, 55), (0, 0, self.LB_W, 26))
+        pygame.draw.rect(self.screen, (25, 55, 110), (bx, by, self.LB_W, 26))
+        pygame.draw.rect(self.screen, (255, 255, 255), (bx, by, self.LB_W, h), 2)
         title = self.f_small.render("LEADERBOARD", True, (255,255,255))
-        self.screen.blit(title, title.get_rect(center=(self.LB_W//2, 13)))
+        self.screen.blit(title, title.get_rect(center=(bx + self.LB_W//2, by + 13)))
         
         for i, p in enumerate(players):
-            y = 28 + i * row_h
+            y = by + 28 + i * row_h
             
-            # Highlight du joueur humain (vert foncé comme dans le vrai jeu)
+            # Highlight du joueur humain
             if p.id == 1:
-                pygame.draw.rect(self.screen, (0, 90, 20), (0, y, self.LB_W, row_h))
+                pygame.draw.rect(self.screen, (20, 100, 15), (bx+2, y, self.LB_W-4, row_h))
             elif i % 2 == 0:
-                pygame.draw.rect(self.screen, (15, 18, 35), (0, y, self.LB_W, row_h))
+                pygame.draw.rect(self.screen, (40, 40, 40), (bx+2, y, self.LB_W-4, row_h))
                 
             # Rang
             if i == 0:
-                rank_s = self.f_small.render("1.", True, (255, 200, 0))
+                rank_s = self.f_small.render("1.", True, (255, 220, 50))
             else:
-                rank_s = self.f_small.render(f"{i+1}.", True, (180,180,180))
-            self.screen.blit(rank_s, (4, y + 3))
+                rank_s = self.f_small.render(f"{i+1}.", True, (200,200,200))
+            self.screen.blit(rank_s, (bx + 8, y + 3))
             
-            # Nom (dans la couleur du joueur)
+            # Nom
             name_s = self.f_small.render(p.name[:20], True, p.color)
-            self.screen.blit(name_s, (28, y + 3))
+            self.screen.blit(name_s, (bx + 30, y + 3))
             
-            # Score (taille du territoire)
+            # Score
             score_s = self.f_small.render(str(p.land), True, (220,220,220))
-            self.screen.blit(score_s, (self.LB_W - score_s.get_width() - 5, y + 3))
+            self.screen.blit(score_s, (bx + self.LB_W - score_s.get_width() - 8, y + 3))
 
     # ─── Stats panel ──────────────────────────────────────────────────────────
     def _render_stats(self, game_state):
-        x0 = self.WIN_W - self.ST_W
+        x0 = self.WIN_W - self.ST_W - 15
+        y0 = 15
         h  = 145
         
         bg = pygame.Surface((self.ST_W, h), pygame.SRCALPHA)
-        bg.fill((10, 12, 22, 215))
-        self.screen.blit(bg, (x0, 0))
+        bg.fill((30, 30, 30, 200))
+        self.screen.blit(bg, (x0, y0))
+        pygame.draw.rect(self.screen, (255, 255, 255), (x0, y0, self.ST_W, h), 1)
         
         human = game_state.players.get(1)
         alive_count = sum(1 for p in game_state.players.values() if p.alive)
@@ -360,11 +371,11 @@ class Renderer:
         ]
         
         for i, (label, value, color) in enumerate(rows):
-            y = 4 + i * 20
-            lbl = self.f_tiny.render(label, True, (160,170,200))
+            y = y0 + 4 + i * 20
+            lbl = self.f_tiny.render(label, True, (240,240,240))
             val = self.f_tiny.render(value, True, color)
-            self.screen.blit(lbl, (x0 + 5, y + 2))
-            self.screen.blit(val, (x0 + self.ST_W - val.get_width() - 5, y + 2))
+            self.screen.blit(lbl, (x0 + 8, y + 2))
+            self.screen.blit(val, (x0 + self.ST_W - val.get_width() - 8, y + 2))
 
     # ─── Jauge circulaire (% territoire neutre restant) ───────────────────────
     def _render_pie(self, game_state):
@@ -373,8 +384,8 @@ class Renderer:
         est encore NEUTRE (non capturé). Le % affiché = 100% - (% capturé total).
         Les segments colorés montrent la distribution entre joueurs.
         """
-        cx, cy = 60, self.WIN_H - self.BAR_H - 75
-        R = 50
+        cx, cy = 70, self.WIN_H - 70
+        R = 55
         
         # Fond gris foncé
         pygame.draw.circle(self.screen, (25, 28, 50), (cx, cy), R + 4)
@@ -453,50 +464,43 @@ class Renderer:
 
     # ─── Barre inférieure ─────────────────────────────────────────────────────
     def _render_bottom_bar(self, human):
-        by = self.WIN_H - self.BAR_H
-        pygame.draw.rect(self.screen, (10, 12, 22), (0, by, self.WIN_W, self.BAR_H))
-        pygame.draw.line(self.screen, (40, 48, 80), (0, by), (self.WIN_W, by), 2)
-        
         pct = human.attack_percentage
         
-        # Bouton "-" (rouge)
-        btn_w, btn_h = 40, 34
-        minus_x = self.WIN_W // 2 - 230
-        minus_y = by + (self.BAR_H - btn_h) // 2
-        plus_x  = self.WIN_W // 2 + 190
-        plus_y  = minus_y
+        btn_w, btn_h = 36, 32
+        sl_w, sl_h = 340, 32
         
-        self.minus_btn_rect = pygame.Rect(minus_x, minus_y, btn_w, btn_h)
-        self.plus_btn_rect  = pygame.Rect(plus_x,  plus_y,  btn_w, btn_h)
+        total_w = btn_w * 2 + sl_w + 10
+        start_x = self.WIN_W // 2 - total_w // 2
+        y_pos = self.WIN_H - sl_h - 20
         
-        pygame.draw.rect(self.screen, (180, 30, 30), self.minus_btn_rect, border_radius=4)
-        pygame.draw.rect(self.screen, (30, 160, 30), self.plus_btn_rect,  border_radius=4)
+        minus_x = start_x
+        sl_x    = start_x + btn_w + 5
+        plus_x  = sl_x + sl_w + 5
         
-        m = self.f_large.render("-", True, (255,255,255))
-        p = self.f_large.render("+", True, (255,255,255))
-        self.screen.blit(m, m.get_rect(center=self.minus_btn_rect.center))
-        self.screen.blit(p, p.get_rect(center=self.plus_btn_rect.center))
-        
-        # Slider (violet exactement comme dans le vrai jeu)
-        sl_w = 380
-        sl_h = 32
-        sl_x = self.WIN_W // 2 - sl_w // 2
-        sl_y = by + (self.BAR_H - sl_h) // 2
-        self.slider_rect = pygame.Rect(sl_x, sl_y, sl_w, sl_h)
+        self.minus_btn_rect = pygame.Rect(minus_x, y_pos, btn_w, btn_h)
+        self.plus_btn_rect  = pygame.Rect(plus_x,  y_pos,  btn_w, btn_h)
+        self.slider_rect = pygame.Rect(sl_x, y_pos, sl_w, sl_h)
         self.slider_x = sl_x
         self.slider_w = sl_w
         
-        # Fond violet sombre
-        pygame.draw.rect(self.screen, (55, 20, 90), (sl_x, sl_y, sl_w, sl_h), border_radius=4)
-        # Partie remplie violette vive
+        # Slider : fond gris-noir, remplissage violet vif
+        pygame.draw.rect(self.screen, (20, 20, 20), self.slider_rect)
         filled_w = int(sl_w * pct)
-        if filled_w > 3:
-            pygame.draw.rect(self.screen, (140, 50, 210),
-                             (sl_x, sl_y, filled_w, sl_h), border_radius=4)
-            # Reflet léger
-            pygame.draw.rect(self.screen, (180, 90, 240),
-                             (sl_x+1, sl_y+1, filled_w-2, sl_h//2-1), border_radius=3)
-        pygame.draw.rect(self.screen, (90, 40, 140), (sl_x, sl_y, sl_w, sl_h), 2, border_radius=4)
+        if filled_w > 0:
+            pygame.draw.rect(self.screen, (160, 30, 210), (sl_x, y_pos, filled_w, sl_h))
+        pygame.draw.rect(self.screen, (255, 255, 255), self.slider_rect, 2)
+        
+        # Bouton "-" (Gris sombre)
+        pygame.draw.rect(self.screen, (30, 30, 30), self.minus_btn_rect)
+        pygame.draw.rect(self.screen, (255, 255, 255), self.minus_btn_rect, 2)
+        m = self.f_large.render("-", True, (255,255,255))
+        self.screen.blit(m, m.get_rect(center=self.minus_btn_rect.center))
+        
+        # Bouton "+" (Gris sombre)
+        pygame.draw.rect(self.screen, (30, 30, 30), self.plus_btn_rect)
+        pygame.draw.rect(self.screen, (255, 255, 255), self.plus_btn_rect, 2)
+        p = self.f_large.render("+", True, (255,255,255))
+        self.screen.blit(p, p.get_rect(center=self.plus_btn_rect.center))
         
         # Texte dans le slider : "balance (pct%)"
         if human.troops > 1_000_000:
@@ -505,9 +509,9 @@ class Renderer:
             bal_str = f"{int(human.troops/1000)}k"
         else:
             bal_str = str(int(human.troops))
-        
+            
         sl_txt = self.f_mid.render(f"{bal_str}  ({int(pct*100)}%)", True, (255,255,255))
-        self.screen.blit(sl_txt, sl_txt.get_rect(center=(sl_x + sl_w//2, sl_y + sl_h//2)))
+        self.screen.blit(sl_txt, sl_txt.get_rect(center=(sl_x + sl_w//2, y_pos + sl_h//2)))
 
     # ─── Boutons Zoom (droite, milieu de l'écran) ─────────────────────────────
     def _render_zoom_buttons(self):
@@ -522,14 +526,28 @@ class Renderer:
         now = pygame.time.get_ticks()
         self._messages = [(m, t) for m, t in self._messages if now - t < 5000]
         
-        y = self.WIN_H - self.BAR_H - 10
+        y = self.WIN_H - 100
         for msg, _ in reversed(self._messages[-5:]):
             s = self.f_tiny.render(msg, True, (230, 230, 200))
             bg = pygame.Surface((s.get_width()+8, s.get_height()+4), pygame.SRCALPHA)
             bg.fill((0,0,0,160))
-            self.screen.blit(bg, (self.WIN_W - s.get_width() - 14, y - s.get_height() - 3))
-            self.screen.blit(s, (self.WIN_W - s.get_width() - 10, y - s.get_height() - 1))
+            self.screen.blit(bg, (self.WIN_W - s.get_width() - 24, y - s.get_height() - 3))
+            self.screen.blit(s, (self.WIN_W - s.get_width() - 20, y - s.get_height() - 1))
             y -= s.get_height() + 6
+
+    def _render_attack_markers(self):
+        """Dessine une confirmation d'attaque : cercle vert avec une épée basique."""
+        now = pygame.time.get_ticks()
+        self._attack_markers = [(wx, wy, t) for wx, wy, t in self._attack_markers if now - t < 500] # Disparaît après 500ms
+        
+        for wx, wy, _ in self._attack_markers:
+            cx, cy = self.camera.world_to_screen(wx, wy)
+            # Cercle vert
+            pygame.draw.circle(self.screen, (60, 200, 60), (cx, cy), 16)
+            pygame.draw.circle(self.screen, (255, 255, 255), (cx, cy), 16, 2)
+            # Epée basique (une ligne en diagonale)
+            pygame.draw.line(self.screen, (255, 255, 255), (cx-6, cy+6), (cx+6, cy-6), 3)
+            pygame.draw.line(self.screen, (255, 255, 255), (cx-8, cy+4), (cx-4, cy+8), 3)
 
     # ─── Frame complète ───────────────────────────────────────────────────────
     def draw(self, game_state, clock):
@@ -562,12 +580,15 @@ class Renderer:
         # 8. Boutons zoom
         self._render_zoom_buttons()
         
-        # 9. Messages
+        # 9. Markers d'attaque (clics)
+        self._render_attack_markers()
+        
+        # 10. Messages
         self._render_messages()
         
-        # 10. FPS
+        # 11. FPS
         fps = int(clock.get_fps())
         fps_s = self.f_tiny.render(f"FPS: {fps}", True, (150,255,150) if fps >= 50 else (255,150,50))
-        self.screen.blit(fps_s, (self.LB_W + 5, 5))
+        self.screen.blit(fps_s, (self.LB_W + 20, 15))
         
         pygame.display.flip()

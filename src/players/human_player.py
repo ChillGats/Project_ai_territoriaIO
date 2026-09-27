@@ -40,14 +40,21 @@ class HumanPlayer(BasePlayer):
                 
                 # Clic gauche sur la carte = Attaque
                 if event.button == 1:
-                    bottom_y = renderer.WIN_H - renderer.BAR_H
-                    if my < bottom_y:
-                        # Vérifie qu'on ne clique pas sur un panneau UI
-                        if mx < renderer.LB_W: return ("idle",)
-                        if mx > renderer.WIN_W - renderer.ST_W: return ("idle",)
-                        wx, wy = renderer.camera.screen_to_world(mx, my)
-                        if 0 <= wx < game_state.width and 0 <= wy < game_state.height:
-                            return ("attack", int(wx), int(wy))
+                    # Vérifie qu'on ne clique pas sur un panneau UI
+                    # Leaderboard (haut-gauche approx 250x350)
+                    if mx < 250 and my < 350: return ("idle",)
+                    # Stats panel (haut-droit approx 200x160)
+                    if mx > renderer.WIN_W - 200 and my < 160: return ("idle",)
+                    # Boutons de zoom (milieu-droit)
+                    if mx > renderer.WIN_W - 100 and renderer.WIN_H//2 - 60 < my < renderer.WIN_H//2 + 50: return ("idle",)
+                    # Barre du bas (bas-centre approx 400x60)
+                    if renderer.WIN_W//2 - 250 < mx < renderer.WIN_W//2 + 250 and my > renderer.WIN_H - 70: return ("idle",)
+                    # Pie chart (bas-gauche)
+                    if mx < 150 and my > renderer.WIN_H - 150: return ("idle",)
+
+                    wx, wy = renderer.camera.screen_to_world(mx, my)
+                    if 0 <= wx < game_state.width and 0 <= wy < game_state.height:
+                        return ("attack", int(wx), int(wy))
                 
                 # Clic droit = drag (géré par la caméra)
                 renderer.camera.handle_event(event)

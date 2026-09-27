@@ -14,8 +14,9 @@ class ActiveAttack:
         self.attack_force = attack_force
         self.queue       = start_queue  # deque de (x, y) : le front de l'onde
         self.visited     = visited      # set de (x, y) : pixels déjà évalués
-        # Vitesse = pixels conquis par frame, proportionnel aux troupes allouées
-        self.speed       = max(2, int(attack_force * 0.08))
+        self.target_id   = None
+        # Vitesse capée pour éviter une expansion instantanée
+        self.speed       = min(200, max(2, int(attack_force * 0.01)))
 
 
 class CombatEngine:
@@ -81,9 +82,11 @@ class CombatEngine:
         if not hasattr(game_state, 'active_attacks'):
             game_state.active_attacks = []
 
-        game_state.active_attacks.append(
-            ActiveAttack(player_id, force, start_queue, visited)
-        )
+        new_attack = ActiveAttack(player_id, force, start_queue, visited)
+        if target_x is not None and target_y is not None:
+            new_attack.target_id = game_state.grid[target_y, target_x]
+            
+        game_state.active_attacks.append(new_attack)
 
     @staticmethod
     def step(game_state):
@@ -129,6 +132,8 @@ class CombatEngine:
 
                     # ── Terre neutre → conquête facile ─────────────────────────
                     elif cell == -1:
+                        if attack.target_id is not None and attack.target_id != -1:
+                            continue # On ne conquiert que la cible
                         cost = 1.0
                         if attack.attack_force >= cost:
                             attack.attack_force -= cost
@@ -138,6 +143,9 @@ class CombatEngine:
 
                     # ── Ennemi → Ratio 2:1 strict ──────────────────────────────
                     else:
+                        if attack.target_id is not None and attack.target_id != cell:
+                            continue # On n'attaque pas les autres joueurs
+
                         enemy = game_state.players.get(cell)
                         if not enemy or not enemy.alive:
                             # Case morte → conquête libre
