@@ -2,176 +2,261 @@ import pygame
 import numpy as np
 import math
 
+# ─── Couleurs de la palette exacte de Territorial.io ─────────────────────────
+WATER_COLOR   = (28, 40, 95)       # Bleu marine foncé (exactement comme dans les screenshots)
+NEUTRAL_COLOR = (175, 160, 130)    # Beige/sable pour la terre neutre
+BORDER_WHITE  = (255, 255, 255)    # Bordures blanches en pointillés
+UI_DARK       = (10, 12, 22)       # Fond UI très sombre
+UI_MID        = (20, 25, 45)       # Fond panneaux
+
+# Couleurs VIVES des joueurs (exactement comme dans le vrai jeu)
+PLAYER_COLORS = {
+    1:  (180,  50, 220),  # Violet/Magenta (Toi - couleur vive)
+    2:  (50,  200, 160),  # Teal/Cyan vif
+    3:  ( 80, 180,  50),  # Vert vif
+    4:  (230,  60,  60),  # Rouge vif
+    5:  ( 50, 130, 230),  # Bleu vif
+    6:  (230, 180,  40),  # Jaune/Or
+    7:  (230, 100,  40),  # Orange
+    8:  (160,  60, 200),  # Violet foncé
+    9:  ( 40, 200, 220),  # Cyan clair
+    10: (200, 200, 200),  # Gris clair
+}
+
+class Camera:
+    """Gestion du zoom et du déplacement caméra."""
+    def __init__(self, world_w, world_h, view_x, view_y, view_w, view_h):
+        self.world_w = world_w
+        self.world_h = world_h
+        self.view_x  = view_x   # Position X de la zone de vue (pixels écran)
+        self.view_y  = view_y
+        self.view_w  = view_w   # Largeur de la zone de vue (pixels écran)
+        self.view_h  = view_h
+        
+        self.zoom    = 2.0       # Zoom de départ (on voit ~50% de la carte)
+        self.cam_x   = 0.0       # Coin haut-gauche de la vue en coords monde
+        self.cam_y   = 0.0
+        self._dragging = False
+        self._drag_start_screen = (0, 0)
+        self._drag_start_cam = (0.0, 0.0)
+
+    def center_on(self, wx, wy):
+        """Centre la caméra sur un point du monde (coords monde)."""
+        visible_w = self.view_w / self.zoom
+        visible_h = self.view_h / self.zoom
+        self.cam_x = wx - visible_w / 2
+        self.cam_y = wy - visible_h / 2
+        self.clamp()
+
+    def clamp(self):
+        visible_w = self.view_w / self.zoom
+        visible_h = self.view_h / self.zoom
+        self.cam_x = max(0.0, min(self.world_w - visible_w, self.cam_x))
+        self.cam_y = max(0.0, min(self.world_h - visible_h, self.cam_y))
+
+    def world_to_screen(self, wx, wy):
+        sx = self.view_x + (wx - self.cam_x) * self.zoom
+        sy = self.view_y + (wy - self.cam_y) * self.zoom
+        return int(sx), int(sy)
+
+    def screen_to_world(self, sx, sy):
+        wx = (sx - self.view_x) / self.zoom + self.cam_x
+        wy = (sy - self.view_y) / self.zoom + self.cam_y
+        return wx, wy
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEWHEEL:
+            # Zoom centré sur la position de la souris
+            mx, my = pygame.mouse.get_pos()
+            if not (self.view_x <= mx <= self.view_x + self.view_w and
+                    self.view_y <= my <= self.view_y + self.view_h):
+                return
+            wx_before, wy_before = self.screen_to_world(mx, my)
+            self.zoom = max(0.5, min(8.0, self.zoom * (1.15 ** event.y)))
+            wx_after, wy_after = self.screen_to_world(mx, my)
+            self.cam_x += wx_before - wx_after
+            self.cam_y += wy_before - wy_after
+            self.clamp()
+
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+            # Clic droit : début du drag
+            self._dragging = True
+            self._drag_start_screen = pygame.mouse.get_pos()
+            self._drag_start_cam = (self.cam_x, self.cam_y)
+
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 3:
+            self._dragging = False
+
+        elif event.type == pygame.MOUSEMOTION and self._dragging:
+            mx, my = pygame.mouse.get_pos()
+            dx = (self._drag_start_screen[0] - mx) / self.zoom
+            dy = (self._drag_start_screen[1] - my) / self.zoom
+            self.cam_x = self._drag_start_cam[0] + dx
+            self.cam_y = self._drag_start_cam[1] + dy
+            self.clamp()
+
+    def zoom_by(self, delta):
+        mx, my = pygame.mouse.get_pos()
+        wx_before, wy_before = self.screen_to_world(mx, my)
+        self.zoom = max(0.5, min(8.0, self.zoom + delta))
+        wx_after, wy_after = self.screen_to_world(mx, my)
+        self.cam_x += wx_before - wx_after
+        self.cam_y += wy_before - wy_after
+        self.clamp()
+
+
 class Renderer:
-    def __init__(self, width, height):
-        self.base_width = width
-        self.base_height = height
-        
-        # Zoom & Camera
-        self.zoom = 1.0
-        self.cam_x = 0.0  # coin haut-gauche de la caméra dans l'espace monde
-        self.cam_y = 0.0
-        
-        # Taille de la fenêtre (fixe)
-        self.WINDOW_W = 1200
-        self.WINDOW_H = 800
-        self.UI_BOTTOM = 60   # Hauteur barre inférieure
-        self.UI_LEFT = 220    # Largeur panneau leaderboard gauche
-        self.STATS_W = 170    # Largeur panneau stats droite
+    """
+    Renderer pixel-perfect basé sur les screenshots de Territorial.io.
+    Structure de l'UI :
+      - Zone carte : toute la fenêtre (les panneaux UI sont superposés)
+      - Leaderboard : coin haut-gauche (220x~300, fond sombre)
+      - Stats :       coin haut-droit  (170x~150, fond sombre)
+      - Pie chart :   bas-gauche       (120x120, fond gris foncé)
+      - Balance bar : haut-centre      (300x28, vert/rouge)
+      - Bottom bar :  toute la largeur (60px hauteur, fond très sombre)
+      - Zoom +/- :    droite milieu    (boutons ronds)
+      - Info panel :  bas-droit        (messages flottants)
+    """
+    LB_W  = 222    # Leaderboard largeur
+    ST_W  = 175    # Stats largeur
+    BAR_H = 60     # Hauteur barre inférieure
+    
+    def __init__(self, world_w, world_h):
+        self.world_w = world_w
+        self.world_h = world_h
         
         pygame.init()
         pygame.font.init()
         
-        self.screen = pygame.display.set_mode((self.WINDOW_W, self.WINDOW_H))
+        # Plein écran
+        info = pygame.display.Info()
+        self.WIN_W = info.current_w
+        self.WIN_H = info.current_h
+        self.screen = pygame.display.set_mode((self.WIN_W, self.WIN_H))
         pygame.display.set_caption("Territorial.io Clone")
         
-        # Fonts
-        self.font_tiny  = pygame.font.SysFont("Arial", 11, bold=True)
-        self.font_small = pygame.font.SysFont("Arial", 14, bold=True)
-        self.font_mid   = pygame.font.SysFont("Arial", 18, bold=True)
-        self.font_big   = pygame.font.SysFont("Arial", 26, bold=True)
-        self.font_huge  = pygame.font.SysFont("Arial", 60, bold=True)
-        self.map_font_cache = {}
+        # Zone de la carte = toute la fenêtre (les UI sont en overlay)
+        map_h = self.WIN_H - self.BAR_H
+        self.camera = Camera(world_w, world_h, 0, 0, self.WIN_W, map_h)
         
-        # Palettes exactes Territorial.io (d'après screenshots)
-        self.WATER_COLOR   = (30, 45, 100)      # Bleu marine foncé
-        self.NEUTRAL_COLOR = (185, 170, 140)    # Beige/sable
-        self.BORDER_COLOR  = (255, 255, 255)    # Bordures blanches
-        self.UI_BG         = (18, 18, 26)       # Fond UI très foncé
-        self.UI_LINE       = (50, 55, 80)
+        # Fonts (style proche du jeu original)
+        self.f_tiny   = pygame.font.SysFont("Arial", 11)
+        self.f_small  = pygame.font.SysFont("Arial", 14, bold=True)
+        self.f_mid    = pygame.font.SysFont("Arial", 17, bold=True)
+        self.f_large  = pygame.font.SysFont("Arial", 22, bold=True)
+        self.f_xl     = pygame.font.SysFont("Arial", 30, bold=True)
+        self._map_font_cache = {}
         
-        # Couleurs des joueurs
-        self.PLAYER_COLORS = {
-            1:  (220, 220, 220),  # Blanc (Toi)
-            2:  (160, 160, 160),  # Gris clair
-            3:  (100, 100, 100),  # Gris moyen
-            4:  (60,  60,  60),   # Gris foncé
-            5:  (200, 200, 255),  # Bleu pâle
-            6:  (180, 220, 180),  # Vert pâle
-            7:  (255, 200, 180),  # Saumon
-            8:  (255, 240, 180),  # Jaune pâle
-            9:  (220, 180, 255),  # Violet pâle
-            10: (180, 255, 230),  # Cyan pâle
-        }
+        # Rect des boutons pour la détection de clic
+        self.zoom_plus_rect  = pygame.Rect(self.WIN_W - self.ST_W - 55, self.WIN_H//2 - 55, 40, 40)
+        self.zoom_minus_rect = pygame.Rect(self.WIN_W - self.ST_W - 55, self.WIN_H//2 + 5, 40, 40)
+        self.slider_rect = None
+        self.slider_x = 0
+        self.slider_w = 0
+        self.minus_btn_rect = None
+        self.plus_btn_rect  = None
         
-        # Surface carte (mise en cache pour éviter de tout recalculer)
-        self._map_surface = None
-        self._map_dirty = True
+        # Messages flottants (bas-droit)
+        self._messages = []
         
-    def get_map_font(self, size):
-        size = max(9, min(120, int(size)))
-        if size not in self.map_font_cache:
-            self.map_font_cache[size] = pygame.font.SysFont("Arial", size, bold=True)
-        return self.map_font_cache[size]
+    def add_message(self, msg):
+        self._messages.append((msg, pygame.time.get_ticks()))
 
-    # ─── Texte avec contour ────────────────────────────────────────────────────
-    def outlined_text(self, font, text, color, outline=(0,0,0)):
-        txt = font.render(text, True, color)
-        out = font.render(text, True, outline)
-        w, h = txt.get_size()
-        surf = pygame.Surface((w+4, h+4), pygame.SRCALPHA)
-        for dx, dy in ((-2,-2),(2,-2),(-2,2),(2,2),(0,-2),(0,2),(-2,0),(2,0)):
-            surf.blit(out, (dx+2, dy+2))
-        surf.blit(txt, (2,2))
+    def get_map_font(self, size):
+        size = max(9, min(80, size))
+        if size not in self._map_font_cache:
+            self._map_font_cache[size] = pygame.font.SysFont("Arial", size, bold=True)
+        return self._map_font_cache[size]
+
+    def outlined(self, font, text, color, outline=(0,0,0), thick=2):
+        base = font.render(text, True, color)
+        out  = font.render(text, True, outline)
+        w, h = base.get_size()
+        surf = pygame.Surface((w + thick*2+2, h + thick*2+2), pygame.SRCALPHA)
+        for dx in range(-thick, thick+1):
+            for dy in range(-thick, thick+1):
+                if dx == 0 and dy == 0: continue
+                surf.blit(out, (dx + thick + 1, dy + thick + 1))
+        surf.blit(base, (thick + 1, thick + 1))
         return surf
 
-    # ─── Espace monde ↔ Espace écran ──────────────────────────────────────────
-    def world_to_screen(self, wx, wy):
-        # Zone carte = toute la fenêtre sauf UI gauche/basse
-        map_area_w = self.WINDOW_W - self.STATS_W
-        map_area_h = self.WINDOW_H - self.UI_BOTTOM
-        sx = self.UI_LEFT + (wx - self.cam_x) * self.zoom
-        sy = (wy - self.cam_y) * self.zoom
-        return int(sx), int(sy)
-
-    def screen_to_world(self, sx, sy):
-        wx = (sx - self.UI_LEFT) / self.zoom + self.cam_x
-        wy = sy / self.zoom + self.cam_y
-        return wx, wy
-
-    def clamp_camera(self):
-        # Limite la caméra aux bords du monde
-        visible_w = (self.WINDOW_W - self.UI_LEFT - self.STATS_W) / self.zoom
-        visible_h = (self.WINDOW_H - self.UI_BOTTOM) / self.zoom
-        self.cam_x = max(0, min(self.base_width  - visible_w, self.cam_x))
-        self.cam_y = max(0, min(self.base_height - visible_h, self.cam_y))
-
-    # ─── Rendu de la carte ────────────────────────────────────────────────────
-    def build_map_surface(self, game_state):
-        """Construit la surface RGB de la carte entière (espace monde)."""
-        rgb = np.zeros((self.base_width, self.base_height, 3), dtype=np.uint8)
+    # ─── Carte ────────────────────────────────────────────────────────────────
+    def _build_map_surface(self, game_state):
+        """Construit la surface monde (non zoomée)."""
+        # Base : eau partout
+        rgb = np.full((self.world_w, self.world_h, 3), WATER_COLOR, dtype=np.uint8)
         
-        # Eau
-        rgb[:, :] = self.WATER_COLOR
+        # Terre neutre
+        neutral = (game_state.grid.T == -1)
+        rgb[neutral] = NEUTRAL_COLOR
         
-        # Terre neutre (grid == -1)
-        neutral_mask = (game_state.grid.T == -1)
-        rgb[neutral_mask] = self.NEUTRAL_COLOR
-        
-        # Territoires des joueurs
-        for pid, color in self.PLAYER_COLORS.items():
+        for pid, color in PLAYER_COLORS.items():
+            if pid not in game_state.players: continue
             mask = (game_state.grid.T == pid)
-            if not np.any(mask):
-                continue
+            if not np.any(mask): continue
+            
             rgb[mask] = color
             
-            # Bordures en pointillés blancs : pixel de frontière si voisin différent
-            # On détecte les bordures via np.roll
+            # Bordures blanches en pointillés (checkerboard)
+            # On détecte les pixels frontières dans l'espace (height, width) = grid space
             border = mask & ~(
-                np.roll(mask, 1, axis=0) &
-                np.roll(mask, -1, axis=0) &
-                np.roll(mask, 1, axis=1) &
-                np.roll(mask, -1, axis=1)
+                np.roll(mask, 1, axis=0) & np.roll(mask, -1, axis=0) &
+                np.roll(mask, 1, axis=1) & np.roll(mask, -1, axis=1)
             )
-            # Motif "pointillé" : on garde 1 pixel sur 2 (checkerboard)
-            ys_b, xs_b = np.where(border.T)
-            for y_b, x_b in zip(ys_b, xs_b):
-                if (x_b + y_b) % 2 == 0:
-                    rgb[x_b, y_b] = self.BORDER_COLOR
-                    
+            # border shape: (height, width) = (world_h, world_w)
+            # rgb shape: (world_w, world_h) = (width, height)
+            # Pour indexer rgb[x, y], on cherche les x,y dans border[y, x]
+            ys_grid, xs_grid = np.where(border)  # ys=hauteur, xs=largeur dans grid
+            # Filtrer les indices hors-limites (bords de carte)
+            valid = (xs_grid < self.world_w) & (ys_grid < self.world_h)
+            xs_grid = xs_grid[valid]
+            ys_grid = ys_grid[valid]
+            # Motif checkerboard
+            checker = (xs_grid + ys_grid) % 2 == 0
+            # rgb[x, y] -> rgb[xs_grid, ys_grid]
+            rgb[xs_grid[checker], ys_grid[checker]] = BORDER_WHITE
+            
         return pygame.surfarray.make_surface(rgb)
 
-    # ─── Rendu complet ────────────────────────────────────────────────────────
-    def draw(self, game_state, clock):
-        self.screen.fill(self.UI_BG)
+    def _render_map(self, game_state):
+        cam = self.camera
+        map_area = pygame.Rect(0, 0, self.WIN_W, self.WIN_H - self.BAR_H)
         
-        # 1. Zone de la carte (clipée)
-        map_area_rect = pygame.Rect(self.UI_LEFT, 0,
-                                    self.WINDOW_W - self.UI_LEFT - self.STATS_W,
-                                    self.WINDOW_H - self.UI_BOTTOM)
+        world_surf = self._build_map_surface(game_state)
         
-        # Construire la surface monde
-        world_surf = self.build_map_surface(game_state)
+        zoom_w = max(1, int(self.world_w * cam.zoom))
+        zoom_h = max(1, int(self.world_h * cam.zoom))
+        scaled  = pygame.transform.scale(world_surf, (zoom_w, zoom_h))
         
-        # Mise à l'échelle selon le zoom
-        zoom_w = int(self.base_width  * self.zoom)
-        zoom_h = int(self.base_height * self.zoom)
-        scaled_surf = pygame.transform.scale(world_surf, (zoom_w, zoom_h))
-        
-        # Décalage caméra
-        blit_x = self.UI_LEFT - int(self.cam_x * self.zoom)
-        blit_y = -int(self.cam_y * self.zoom)
+        blit_x = -int(cam.cam_x * cam.zoom)
+        blit_y = -int(cam.cam_y * cam.zoom)
         
         old_clip = self.screen.get_clip()
-        self.screen.set_clip(map_area_rect)
-        self.screen.blit(scaled_surf, (blit_x, blit_y))
+        self.screen.set_clip(map_area)
+        self.screen.blit(scaled, (blit_x, blit_y))
+        self.screen.set_clip(old_clip)
+
+    def _render_labels(self, game_state):
+        cam = self.camera
+        map_area = pygame.Rect(0, 0, self.WIN_W, self.WIN_H - self.BAR_H)
+        old_clip = self.screen.get_clip()
+        self.screen.set_clip(map_area)
         
-        # 2. Textes sur les territoires
-        sorted_players = sorted([p for p in game_state.players.values() if p.alive],
-                                 key=lambda x: x.land, reverse=True)
+        sorted_p = sorted([p for p in game_state.players.values() if p.alive],
+                          key=lambda x: x.land, reverse=True)
         
-        for p in sorted_players:
+        for p in sorted_p:
             if p.land < 30: continue
+            cx, cy = cam.world_to_screen(p.center_x, p.center_y)
+            if not map_area.collidepoint(cx, cy): continue
             
-            cx, cy = self.world_to_screen(p.center_x, p.center_y)
-            if not map_area_rect.collidepoint(cx, cy): continue
+            # Taille police en fonction du territoire et du zoom
+            fsize = int(math.sqrt(p.land * cam.zoom) * 0.28)
+            fsize = max(9, min(60, fsize))
             
-            # Taille de la police proportionnelle, mais plafonnée + zoom
-            # On utilise une formule plus conservative : sqrt(land) * 0.3
-            fsize = int(math.sqrt(p.land * self.zoom) * 0.30)
-            fsize = max(9, min(50, fsize))
-            
-            if fsize < 10: continue
+            # Estimation de la taille du diamant pour éviter d'afficher un texte trop grand
+            approx_radius = int(math.sqrt(p.land) * cam.zoom * 0.7)
             
             if p.troops > 1_000_000:
                 t_str = f"{p.troops/1_000_000:.1f}M"
@@ -179,255 +264,310 @@ class Renderer:
                 t_str = f"{p.troops/1000:.1f}k"
             else:
                 t_str = str(int(p.troops))
-                
+            
             font = self.get_map_font(fsize)
-            name_surf = self.outlined_text(font, p.name, (255,255,255))
-            troop_surf = self.outlined_text(self.get_map_font(max(9, fsize-3)), t_str, (230,230,230))
+            n_surf = self.outlined(font, p.name, (255,255,255), thick=1)
+            t_surf = self.outlined(self.get_map_font(max(9, fsize-3)), t_str, (230,230,230), thick=1)
             
-            # Vérifier que le texte rentre dans le territoire (largeur approx)
-            approx_diam = int(math.sqrt(p.land) * 1.4 * self.zoom)
-            if name_surf.get_width() > approx_diam:
-                continue  # Trop petit pour afficher le nom
+            if n_surf.get_width() > approx_radius * 2:
+                continue
             
-            self.screen.blit(name_surf,  name_surf.get_rect(center=(cx, cy - fsize//2 - 1)))
-            self.screen.blit(troop_surf, troop_surf.get_rect(center=(cx, cy + fsize//2 + 1)))
-                
+            self.screen.blit(n_surf, n_surf.get_rect(center=(cx, cy - fsize//2)))
+            self.screen.blit(t_surf, t_surf.get_rect(center=(cx, cy + fsize//2 + 2)))
+            
         self.screen.set_clip(old_clip)
-        
-        # 3. Panneau LEADERBOARD (gauche)
-        self._draw_leaderboard(sorted_players[:10])
-        
-        # 4. Panneau STATS (droite)
-        self._draw_stats(game_state, clock)
-        
-        # 5. Diagramme circulaire (bas-gauche)
-        human = game_state.players.get(1)
-        if human:
-            self._draw_pie(human)
-        
-        # 6. Barre de balance (haut-centre)
-        if human:
-            self._draw_balance_bar(human)
-        
-        # 7. Barre inférieure - Slider
-        if human:
-            self._draw_bottom_ui(human)
-            
-        # 8. FPS
-        fps = clock.get_fps()
-        fps_surf = self.font_small.render(f"FPS: {int(fps)}", True, (200, 255, 200))
-        self.screen.blit(fps_surf, (self.UI_LEFT + 5, 5))
-        
-        pygame.display.flip()
 
-    # ─── UI Leaderboard ───────────────────────────────────────────────────────
-    def _draw_leaderboard(self, players):
-        lb_rect = pygame.Rect(0, 0, self.UI_LEFT, len(players)*26 + 36)
-        # Fond semi-transparent
-        bg = pygame.Surface((lb_rect.w, lb_rect.h), pygame.SRCALPHA)
-        bg.fill((10, 12, 20, 210))
-        self.screen.blit(bg, (0,0))
+    # ─── Leaderboard ──────────────────────────────────────────────────────────
+    def _render_leaderboard(self, game_state):
+        players = sorted([p for p in game_state.players.values() if p.alive],
+                          key=lambda x: x.land, reverse=True)[:10]
         
-        # Titre
-        title = self.font_mid.render("LEADERBOARD", True, (255,255,255))
-        pygame.draw.rect(self.screen, (30,35,60), (0,0, self.UI_LEFT, 28))
-        self.screen.blit(title, title.get_rect(center=(self.UI_LEFT//2, 14)))
+        row_h = 22
+        h = 30 + len(players) * row_h
+        
+        bg = pygame.Surface((self.LB_W, h), pygame.SRCALPHA)
+        bg.fill((10, 12, 22, 215))
+        self.screen.blit(bg, (0, 0))
+        
+        # Titre "LEADERBOARD"
+        pygame.draw.rect(self.screen, (25, 30, 55), (0, 0, self.LB_W, 26))
+        title = self.f_small.render("LEADERBOARD", True, (255,255,255))
+        self.screen.blit(title, title.get_rect(center=(self.LB_W//2, 13)))
         
         for i, p in enumerate(players):
-            y = 30 + i * 26
-            # Ligne de fond alternée
-            row_color = (20,25,45,180) if i % 2 == 0 else (12,15,30,180)
+            y = 28 + i * row_h
             
-            # Mise en évidence du joueur humain
+            # Highlight du joueur humain (vert foncé comme dans le vrai jeu)
             if p.id == 1:
-                pygame.draw.rect(self.screen, (0, 100, 30), (0, y, self.UI_LEFT, 25))
-            
+                pygame.draw.rect(self.screen, (0, 90, 20), (0, y, self.LB_W, row_h))
+            elif i % 2 == 0:
+                pygame.draw.rect(self.screen, (15, 18, 35), (0, y, self.LB_W, row_h))
+                
             # Rang
-            crown = "👑" if i == 0 else f"{i+1}."
-            rank_c = (255, 210, 0) if i == 0 else (200, 200, 200)
-            rank_s = self.font_small.render(crown, True, rank_c)
-            self.screen.blit(rank_s, (5, y + 5))
+            if i == 0:
+                rank_s = self.f_small.render("1.", True, (255, 200, 0))
+            else:
+                rank_s = self.f_small.render(f"{i+1}.", True, (180,180,180))
+            self.screen.blit(rank_s, (4, y + 3))
             
-            # Nom
-            name_s = self.font_small.render(p.name[:18], True, p.color)
-            self.screen.blit(name_s, (30, y + 5))
+            # Nom (dans la couleur du joueur)
+            name_s = self.f_small.render(p.name[:20], True, p.color)
+            self.screen.blit(name_s, (28, y + 3))
             
             # Score (taille du territoire)
-            score_s = self.font_small.render(str(p.land), True, (220,220,220))
-            self.screen.blit(score_s, (self.UI_LEFT - score_s.get_width() - 6, y+5))
+            score_s = self.f_small.render(str(p.land), True, (220,220,220))
+            self.screen.blit(score_s, (self.LB_W - score_s.get_width() - 5, y + 3))
 
-    # ─── UI Stats (droite) ────────────────────────────────────────────────────
-    def _draw_stats(self, game_state, clock):
-        x0 = self.WINDOW_W - self.STATS_W
-        bg = pygame.Surface((self.STATS_W, 160), pygame.SRCALPHA)
-        bg.fill((10, 12, 20, 220))
+    # ─── Stats panel ──────────────────────────────────────────────────────────
+    def _render_stats(self, game_state):
+        x0 = self.WIN_W - self.ST_W
+        h  = 145
+        
+        bg = pygame.Surface((self.ST_W, h), pygame.SRCALPHA)
+        bg.fill((10, 12, 22, 215))
         self.screen.blit(bg, (x0, 0))
         
         human = game_state.players.get(1)
         alive_count = sum(1 for p in game_state.players.values() if p.alive)
+        total_px = game_state.width * game_state.height
         
-        rows = [
-            ("Humans",      "1",   (200,200,200)),
-            ("Bots",        str(alive_count - 1), (200,200,200)),
-            ("Percentage",  f"{(human.land / max(1, game_state.width*game_state.height)) * 100:.2f}%"
-                              if human else "0%", (200,200,200)),
-        ]
+        pct_str = f"{(human.land / max(1, total_px)) * 100:.2f}%" if human else "0.00%"
         
         if human:
             max_troops = human.land * 150
             ratio = human.troops / max(1, max_troops)
-            interest = max(0.0, 0.007 * (1 - ratio**2)) * 100
-            interest_color = (255,80,80) if interest < 1.0 else (255,220,0)
-            rows.append(("Interest", f"{interest:.2f}%", interest_color))
-            rows.append(("Income",   str(int(human.land * 1.5)), (200,200,200)))
-            
+            interest_rate = max(0.0, 0.007 * (1.0 - ratio**2)) * 100
+            interest_color = (255, 80, 80) if interest_rate < 1.0 else (255, 220, 50)
+            interest_str = f"{interest_rate:.2f}%"
+            income_str = str(int(human.land * 1.5))
+        else:
+            interest_color = (255, 220, 50)
+            interest_str = "7.00%"
+            income_str = "0"
+        
         ticks = game_state.tick_count
         mins, secs = divmod(ticks // 60, 60)
-        rows.append(("Time", f"{mins}:{secs:02d}", (200,200,200)))
+        time_str = f"{mins}:{secs:02d}"
+        
+        rows = [
+            ("Humans",      "1",          (255, 255, 255)),
+            ("Bots",        str(alive_count - 1), (255,255,255)),
+            ("Spectators",  "0",          (255, 255, 255)),
+            ("Percentage",  pct_str,      (255, 255, 255)),
+            ("Interest",    interest_str, interest_color),
+            ("Income",      income_str,   (255, 255, 255)),
+            ("Time",        time_str,     (100, 255, 100)),
+        ]
         
         for i, (label, value, color) in enumerate(rows):
-            y = 5 + i * 22
-            lbl_s = self.font_small.render(label, True, (160,160,180))
-            val_s = self.font_small.render(value, True, color)
-            self.screen.blit(lbl_s, (x0 + 6, y + 2))
-            self.screen.blit(val_s, (x0 + self.STATS_W - val_s.get_width() - 6, y + 2))
+            y = 4 + i * 20
+            lbl = self.f_tiny.render(label, True, (160,170,200))
+            val = self.f_tiny.render(value, True, color)
+            self.screen.blit(lbl, (x0 + 5, y + 2))
+            self.screen.blit(val, (x0 + self.ST_W - val.get_width() - 5, y + 2))
 
-    # ─── Diagramme circulaire ─────────────────────────────────────────────────
-    def _draw_pie(self, human):
-        cx, cy = 55, self.WINDOW_H - self.UI_BOTTOM - 70
-        radius = 48
+    # ─── Jauge circulaire (% territoire neutre restant) ───────────────────────
+    def _render_pie(self, game_state):
+        """
+        La jauge circulaire dans Territorial.io montre combien de territoire
+        est encore NEUTRE (non capturé). Le % affiché = 100% - (% capturé total).
+        Les segments colorés montrent la distribution entre joueurs.
+        """
+        cx, cy = 60, self.WIN_H - self.BAR_H - 75
+        R = 50
         
-        bg = pygame.Surface((radius*2+20, radius*2+20), pygame.SRCALPHA)
-        bg.fill((10,12,20,200))
-        self.screen.blit(bg, (cx - radius - 10, cy - radius - 10))
+        # Fond gris foncé
+        pygame.draw.circle(self.screen, (25, 28, 50), (cx, cy), R + 4)
+        pygame.draw.circle(self.screen, (50, 55, 80), (cx, cy), R + 4, 2)
         
-        pct = human.attack_percentage
-        # Arc de cercle pour représenter le pourcentage utilisé
-        pygame.draw.circle(self.screen, (40,40,60), (cx, cy), radius)
+        total_px = game_state.width * game_state.height
+        ids, counts = np.unique(game_state.grid, return_counts=True)
+        land_dict = dict(zip(ids.tolist(), counts.tolist()))
         
-        # Arc rempli (angle de 0 à pct*360°)
-        angle_start = -90  # Commence en haut
-        angle_end = angle_start + int(pct * 360)
+        neutral_px = land_dict.get(-1, 0)
+        water_px   = land_dict.get(0, 0)
+        land_total = total_px - water_px
         
-        # Dessin de l'arc rempli pixel par pixel (via polygone)
-        if pct > 0:
+        # Fond gris = territoire neutre
+        pygame.draw.circle(self.screen, (140, 130, 110), (cx, cy), R)
+        
+        # Secteurs colorés pour chaque joueur
+        angle_start = -math.pi / 2  # Commence en haut
+        for pid, color in PLAYER_COLORS.items():
+            px_count = land_dict.get(pid, 0)
+            if px_count == 0: continue
+            frac = px_count / max(1, land_total)
+            angle_end = angle_start + frac * 2 * math.pi
+            
+            # Dessin d'un secteur
             pts = [(cx, cy)]
-            for a in range(angle_start, angle_end + 1, 2):
-                rad = math.radians(a)
-                pts.append((cx + radius * math.cos(rad), cy + radius * math.sin(rad)))
+            steps = max(4, int(frac * 60))
+            for k in range(steps + 1):
+                a = angle_start + k / steps * (angle_end - angle_start)
+                pts.append((cx + R * math.cos(a), cy + R * math.sin(a)))
             if len(pts) >= 3:
-                # Petite portion = gris sombre, grande portion = couleur vive
-                fill_color = (180, 60, 60) if pct > 0.8 else (100, 140, 200)
-                pygame.draw.polygon(self.screen, fill_color, pts)
+                pygame.draw.polygon(self.screen, color, pts)
+            angle_start = angle_end
         
-        pygame.draw.circle(self.screen, (200,200,200), (cx, cy), radius, 2)
+        # Cercle de bord
+        pygame.draw.circle(self.screen, (200, 200, 200), (cx, cy), R, 2)
         
-        pct_surf = self.font_mid.render(f"{int(pct*100)}%", True, (255,255,255))
+        # Pourcentage de territoire neutre restant
+        neutral_pct = int((neutral_px / max(1, land_total)) * 100)
+        pct_surf = self.f_mid.render(f"{neutral_pct}%", True, (255, 255, 255))
+        # Ombre
+        shadow = self.f_mid.render(f"{neutral_pct}%", True, (0,0,0))
+        self.screen.blit(shadow, shadow.get_rect(center=(cx+1, cy+1)))
         self.screen.blit(pct_surf, pct_surf.get_rect(center=(cx, cy)))
 
-    # ─── Barre de balance (haut-centre) ───────────────────────────────────────
-    def _draw_balance_bar(self, human):
-        bar_w = 300
-        bar_h = 28
-        bx = self.WINDOW_W//2 - bar_w//2
+    # ─── Balance bar (haut-centre) ────────────────────────────────────────────
+    def _render_balance_bar(self, human):
+        bw, bh = 300, 26
+        bx = self.WIN_W // 2 - bw // 2
         by = 5
         
-        # Fond
-        pygame.draw.rect(self.screen, (20,20,40), (bx, by, bar_w, bar_h), border_radius=4)
+        pygame.draw.rect(self.screen, (15, 18, 35), (bx, by, bw, bh), border_radius=3)
         
         max_troops = human.land * 150
-        ratio = human.troops / max(1, max_troops)
+        ratio = min(1.0, human.troops / max(1, max_troops))
+        fill_color = (50, 200, 60) if ratio < 0.8 else (200, 50, 50)
+        fill_w = int(bw * ratio)
+        if fill_w > 2:
+            pygame.draw.rect(self.screen, fill_color, (bx, by, fill_w, bh), border_radius=3)
         
-        # Partie remplie : rouge si pleine, vert si petit ratio
-        fill_col = (200, 50, 50) if ratio > 0.8 else (50, 180, 80)
-        fill_w = int(bar_w * min(1.0, ratio))
-        pygame.draw.rect(self.screen, fill_col, (bx, by, fill_w, bar_h), border_radius=4)
-        pygame.draw.rect(self.screen, (80, 90, 120), (bx, by, bar_w, bar_h), 2, border_radius=4)
+        pygame.draw.rect(self.screen, (60, 70, 120), (bx, by, bw, bh), 1, border_radius=3)
         
-        # Texte balance
+        # Texte : "balance +income"
         if human.troops > 1_000_000:
-            t_str = f"{human.troops/1_000_000:.2f}M"
+            bal_str = f"{human.troops/1_000_000:.2f}M"
         elif human.troops > 1_000:
-            t_str = f"{human.troops/1000:.1f}k"
+            bal_str = f"{int(human.troops/1000)}k"
         else:
-            t_str = str(int(human.troops))
-            
-        # Variation (income)
+            bal_str = str(int(human.troops))
+        
         income = int(human.land * 1.5)
-        bal_surf = self.font_mid.render(f"{t_str}  +{income}", True, (255,255,255))
-        self.screen.blit(bal_surf, bal_surf.get_rect(center=(bx + bar_w//2, by + bar_h//2)))
+        txt = self.f_mid.render(f"{bal_str}  +{income}", True, (255,255,255))
+        shadow = self.f_mid.render(f"{bal_str}  +{income}", True, (0,0,0))
+        self.screen.blit(shadow, shadow.get_rect(center=(self.WIN_W//2+1, by+bh//2+1)))
+        self.screen.blit(txt, txt.get_rect(center=(self.WIN_W//2, by+bh//2)))
 
     # ─── Barre inférieure ─────────────────────────────────────────────────────
-    def _draw_bottom_ui(self, human):
-        by = self.WINDOW_H - self.UI_BOTTOM
-        pygame.draw.rect(self.screen, (15, 16, 28), (0, by, self.WINDOW_W, self.UI_BOTTOM))
-        pygame.draw.line(self.screen, self.UI_LINE, (0, by), (self.WINDOW_W, by), 2)
+    def _render_bottom_bar(self, human):
+        by = self.WIN_H - self.BAR_H
+        pygame.draw.rect(self.screen, (10, 12, 22), (0, by, self.WIN_W, self.BAR_H))
+        pygame.draw.line(self.screen, (40, 48, 80), (0, by), (self.WIN_W, by), 2)
         
         pct = human.attack_percentage
         
-        # Bouton "-"
-        btn_size = 36
-        minus_rect = pygame.Rect(self.WINDOW_W//2 - 220, by + 12, btn_size, btn_size)
-        plus_rect  = pygame.Rect(self.WINDOW_W//2 + 184, by + 12, btn_size, btn_size)
+        # Bouton "-" (rouge)
+        btn_w, btn_h = 40, 34
+        minus_x = self.WIN_W // 2 - 230
+        minus_y = by + (self.BAR_H - btn_h) // 2
+        plus_x  = self.WIN_W // 2 + 190
+        plus_y  = minus_y
         
-        pygame.draw.rect(self.screen, (180,40,40), minus_rect, border_radius=6)
-        pygame.draw.rect(self.screen, (40,180,40), plus_rect,  border_radius=6)
+        self.minus_btn_rect = pygame.Rect(minus_x, minus_y, btn_w, btn_h)
+        self.plus_btn_rect  = pygame.Rect(plus_x,  plus_y,  btn_w, btn_h)
         
-        m_surf = self.font_big.render("-", True, (255,255,255))
-        p_surf = self.font_big.render("+", True, (255,255,255))
-        self.screen.blit(m_surf, m_surf.get_rect(center=minus_rect.center))
-        self.screen.blit(p_surf, p_surf.get_rect(center=plus_rect.center))
+        pygame.draw.rect(self.screen, (180, 30, 30), self.minus_btn_rect, border_radius=4)
+        pygame.draw.rect(self.screen, (30, 160, 30), self.plus_btn_rect,  border_radius=4)
         
-        # Slider violette (comme Territorial.io)
-        slider_w = 370
-        slider_h = 30
-        slider_x = self.WINDOW_W//2 - slider_w//2
-        slider_y = by + (self.UI_BOTTOM - slider_h)//2
+        m = self.f_large.render("-", True, (255,255,255))
+        p = self.f_large.render("+", True, (255,255,255))
+        self.screen.blit(m, m.get_rect(center=self.minus_btn_rect.center))
+        self.screen.blit(p, p.get_rect(center=self.plus_btn_rect.center))
         
-        pygame.draw.rect(self.screen, (60,30,90), (slider_x, slider_y, slider_w, slider_h), border_radius=6)
-        filled_w = int(slider_w * pct)
-        if filled_w > 4:
-            pygame.draw.rect(self.screen, (130, 60, 200),
-                             (slider_x, slider_y, filled_w, slider_h), border_radius=6)
-            # Reflet (effet premium)
-            pygame.draw.rect(self.screen, (180, 100, 240),
-                             (slider_x+2, slider_y+2, filled_w-4, slider_h//2 - 2), border_radius=4)
-                             
-        pygame.draw.rect(self.screen, (100,60,140), (slider_x, slider_y, slider_w, slider_h), 2, border_radius=6)
+        # Slider (violet exactement comme dans le vrai jeu)
+        sl_w = 380
+        sl_h = 32
+        sl_x = self.WIN_W // 2 - sl_w // 2
+        sl_y = by + (self.BAR_H - sl_h) // 2
+        self.slider_rect = pygame.Rect(sl_x, sl_y, sl_w, sl_h)
+        self.slider_x = sl_x
+        self.slider_w = sl_w
         
-        # Repères
-        for mark in [0.25, 0.5, 0.75]:
-            mx = slider_x + int(slider_w * mark)
-            pygame.draw.line(self.screen, (90,50,130), (mx, slider_y+4), (mx, slider_y+slider_h-4), 1)
+        # Fond violet sombre
+        pygame.draw.rect(self.screen, (55, 20, 90), (sl_x, sl_y, sl_w, sl_h), border_radius=4)
+        # Partie remplie violette vive
+        filled_w = int(sl_w * pct)
+        if filled_w > 3:
+            pygame.draw.rect(self.screen, (140, 50, 210),
+                             (sl_x, sl_y, filled_w, sl_h), border_radius=4)
+            # Reflet léger
+            pygame.draw.rect(self.screen, (180, 90, 240),
+                             (sl_x+1, sl_y+1, filled_w-2, sl_h//2-1), border_radius=3)
+        pygame.draw.rect(self.screen, (90, 40, 140), (sl_x, sl_y, sl_w, sl_h), 2, border_radius=4)
         
-        # Texte
+        # Texte dans le slider : "balance (pct%)"
         if human.troops > 1_000_000:
-            t_str = f"{human.troops/1_000_000:.1f}M"
+            bal_str = f"{human.troops/1_000_000:.1f}M"
         elif human.troops > 1_000:
-            t_str = f"{human.troops/1000:.1f}k"
+            bal_str = f"{int(human.troops/1000)}k"
         else:
-            t_str = str(int(human.troops))
-            
-        pct_surf = self.font_mid.render(f"{t_str}  ({int(pct*100)}%)", True, (255,255,255))
-        self.screen.blit(pct_surf, pct_surf.get_rect(center=(slider_x + slider_w//2, slider_y + slider_h//2)))
+            bal_str = str(int(human.troops))
         
-        # Zoom buttons (droite de l'UI)
-        zoom_plus_rect  = pygame.Rect(self.WINDOW_W - self.STATS_W - 45, self.WINDOW_H//2 - 50, 36, 36)
-        zoom_minus_rect = pygame.Rect(self.WINDOW_W - self.STATS_W - 45, self.WINDOW_H//2, 36, 36)
-        pygame.draw.circle(self.screen, (40,45,70), zoom_plus_rect.center, 18)
-        pygame.draw.circle(self.screen, (40,45,70), zoom_minus_rect.center, 18)
-        pygame.draw.circle(self.screen, (100,110,160), zoom_plus_rect.center, 18, 2)
-        pygame.draw.circle(self.screen, (100,110,160), zoom_minus_rect.center, 18, 2)
-        zp_s = self.font_big.render("+", True, (255,255,255))
-        zm_s = self.font_big.render("-", True, (255,255,255))
-        self.screen.blit(zp_s, zp_s.get_rect(center=zoom_plus_rect.center))
-        self.screen.blit(zm_s, zm_s.get_rect(center=zoom_minus_rect.center))
+        sl_txt = self.f_mid.render(f"{bal_str}  ({int(pct*100)}%)", True, (255,255,255))
+        self.screen.blit(sl_txt, sl_txt.get_rect(center=(sl_x + sl_w//2, sl_y + sl_h//2)))
+
+    # ─── Boutons Zoom (droite, milieu de l'écran) ─────────────────────────────
+    def _render_zoom_buttons(self):
+        for rect, lbl in [(self.zoom_plus_rect, "+"), (self.zoom_minus_rect, "-")]:
+            pygame.draw.circle(self.screen, (30, 35, 60), rect.center, 20)
+            pygame.draw.circle(self.screen, (80, 90, 140), rect.center, 20, 2)
+            s = self.f_large.render(lbl, True, (220,220,220))
+            self.screen.blit(s, s.get_rect(center=rect.center))
+
+    # ─── Messages bas-droite ──────────────────────────────────────────────────
+    def _render_messages(self):
+        now = pygame.time.get_ticks()
+        self._messages = [(m, t) for m, t in self._messages if now - t < 5000]
         
-        # Retourner les rects pour les collisions dans human_player
-        human._minus_rect = minus_rect
-        human._plus_rect  = plus_rect
-        human._slider_rect = pygame.Rect(slider_x, slider_y, slider_w, slider_h)
-        human._slider_x    = slider_x
-        human._slider_w    = slider_w
-        human._zoom_plus_rect  = zoom_plus_rect
-        human._zoom_minus_rect = zoom_minus_rect
+        y = self.WIN_H - self.BAR_H - 10
+        for msg, _ in reversed(self._messages[-5:]):
+            s = self.f_tiny.render(msg, True, (230, 230, 200))
+            bg = pygame.Surface((s.get_width()+8, s.get_height()+4), pygame.SRCALPHA)
+            bg.fill((0,0,0,160))
+            self.screen.blit(bg, (self.WIN_W - s.get_width() - 14, y - s.get_height() - 3))
+            self.screen.blit(s, (self.WIN_W - s.get_width() - 10, y - s.get_height() - 1))
+            y -= s.get_height() + 6
+
+    # ─── Frame complète ───────────────────────────────────────────────────────
+    def draw(self, game_state, clock):
+        self.screen.fill(WATER_COLOR)
+        
+        # 1. Carte
+        self._render_map(game_state)
+        
+        # 2. Labels sur la carte
+        self._render_labels(game_state)
+        
+        # 3. Leaderboard (overlay)
+        self._render_leaderboard(game_state)
+        
+        # 4. Stats panel (overlay)
+        self._render_stats(game_state)
+        
+        # 5. Pie chart
+        self._render_pie(game_state)
+        
+        # 6. Barre de balance
+        human = game_state.players.get(1)
+        if human and human.alive:
+            self._render_balance_bar(human)
+        
+        # 7. Barre inférieure
+        if human and human.alive:
+            self._render_bottom_bar(human)
+        
+        # 8. Boutons zoom
+        self._render_zoom_buttons()
+        
+        # 9. Messages
+        self._render_messages()
+        
+        # 10. FPS
+        fps = int(clock.get_fps())
+        fps_s = self.f_tiny.render(f"FPS: {fps}", True, (150,255,150) if fps >= 50 else (255,150,50))
+        self.screen.blit(fps_s, (self.LB_W + 5, 5))
+        
+        pygame.display.flip()

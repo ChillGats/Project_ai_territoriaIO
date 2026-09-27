@@ -3,54 +3,58 @@ import sys
 from engine.game_state import GameState
 from engine.economy import Economy
 from engine.combat import CombatEngine
-from graphics.renderer import Renderer
+from graphics.renderer import Renderer, PLAYER_COLORS
 from players.human_player import HumanPlayer
 from players.bot_player import BotPlayer
 
-def process_action(state, renderer, player_obj, action):
-    """Interprète l'action retournée par un joueur et l'applique au moteur."""
-    atype = action[0]
 
+def process_action(state, renderer, player_obj, action):
+    atype = action[0]
+    
     if atype == "set_pct":
         state.players[player_obj.id].attack_percentage = action[1]
-
+        
     elif atype == "attack":
         tx, ty = action[1], action[2]
         pct = state.players[player_obj.id].attack_percentage
         CombatEngine.start_attack(state, player_obj.id, tx, ty, pct)
 
-    elif atype == "zoom":
-        delta = action[1]
-        renderer.zoom = max(0.5, min(6.0, renderer.zoom + delta))
-        renderer.clamp_camera()
-
+    # "zoom" est géré directement par la caméra dans HumanPlayer
     # "idle" ne fait rien
 
 
 if __name__ == "__main__":
-    MAP_W, MAP_H = 900, 700   # Résolution de la carte (espace monde)
-    
+    MAP_W, MAP_H = 900, 700
+
     renderer = Renderer(MAP_W, MAP_H)
     state    = GameState(MAP_W, MAP_H)
 
-    # ── Joueur humain (ID 1) ──────────────────────────────────────────────────
-    p_color = renderer.PLAYER_COLORS[1]
-    state.add_player(1, p_color, "Toi", None, None)
+    # Joueur humain
+    p1_color = PLAYER_COLORS[1]
+    state.add_player(1, p1_color, "Toi", None, None)
     human = HumanPlayer(1)
     players = [human]
 
-    # ── 9 Bots ───────────────────────────────────────────────────────────────
-    bot_names = ["Empire Rouge", "Royaume Vert", "Sultanat", "Duché Violet",
-                 "République Cyan", "Khalifat", "Gris Corp", "Sombre Nation", "Alliance Rose"]
+    # 9 Bots avec de vrais noms d'empires
+    bot_names = ["Ottoman Empire", "British Empire", "Zulu Empire",
+                 "Kaabu Empire", "Austria-Hungary", "Qin Dynasty",
+                 "Joseon", "Maratha Empire", "Mughal Empire"]
     for i in range(2, 11):
-        color = renderer.PLAYER_COLORS.get(i, (128, 128, 128))
+        color = PLAYER_COLORS.get(i, (128,128,128))
         state.add_player(i, color, bot_names[i-2], None, None)
         players.append(BotPlayer(i))
 
-    # ── Boucle principale ─────────────────────────────────────────────────────
-    clock = pygame.time.Clock()
-    print("Territorial.io Clone — Moteur Asynchrone v2 Prêt !")
-    print("Commandes : Clic Gauche = Attaque | Molette = % troupes | +/- = Zoom | Espace = Expansion globale")
+    # Centrer la caméra sur le joueur humain dès le départ
+    p1 = state.players[1]
+    renderer.camera.center_on(p1.center_x, p1.center_y)
+    renderer.camera.zoom = 4.0  # Zoom de départ proche du joueur
+
+    clock  = pygame.time.Clock()
+    print("Territorial.io Clone v3 - Pret!")
+    print("Controles: Clic Gauche=Attaque | Molette=Zoom | Clic Droit=Deplacer | Espace=Expansion")
+
+    # Pour détecter les morts et afficher des messages
+    alive_set = set(state.players.keys())
 
     running = True
     while running:
@@ -59,35 +63,42 @@ if __name__ == "__main__":
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                pygame.quit()
+                sys.exit()
 
-        # 1. Économie (intérêts + revenus)
+        # 1. Economie
         Economy.step(state)
         state.recalculate_land_and_centers()
 
-        # 2. Propagation des attaques asynchrones
+        # 2. Messages de mort
+        current_alive = set(p.id for p in state.players.values() if p.alive)
+        for pid in alive_set - current_alive:
+            name = state.players[pid].name
+            renderer.add_message(f"{name} left the game.")
+        alive_set = current_alive
+
+        # 3. Attaques asynchrones
         CombatEngine.step(state)
 
-        # 3. Actions des joueurs
+        # 4. Actions des joueurs
         for p in players:
             if not state.players[p.id].alive:
                 continue
+                
             if isinstance(p, HumanPlayer):
                 action = p.get_action(state, events, renderer)
+                if action[0] != "idle":
+                    process_action(state, renderer, p, action)
             else:
-                # Les bots renvoient une action au format bot (tuple 4)
                 raw = p.get_action(state, events)
-                # Convertir le format bot → format moteur
                 tx, ty, atype_bot, new_pct = raw
                 if atype_bot == 1:
-                    action = ("set_pct", new_pct)
+                    process_action(state, renderer, p, ("set_pct", new_pct))
                 elif atype_bot == 2:
-                    pct_bot = state.players[p.id].attack_percentage
-                    action = ("attack", tx, ty)
-                else:
-                    action = ("idle",)
+                    pct = state.players[p.id].attack_percentage
+                    CombatEngine.start_attack(state, p.id, tx, ty, pct)
 
-            process_action(state, renderer, p, action)
-
-        # 4. Rendu
+        # 5. Rendu
         renderer.draw(state, clock)
         clock.tick(60)
