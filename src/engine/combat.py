@@ -7,8 +7,6 @@ class ActiveAttack:
         self.attack_force = attack_force
         self.queue = start_queue
         self.visited = visited
-        # Vitesse : combien de "coût" on peut dépenser par frame. 
-        # Plus on envoie de troupes, plus l'onde se propage vite !
         self.speed = max(1.0, attack_force * 0.05) 
 
 class CombatEngine:
@@ -18,16 +16,19 @@ class CombatEngine:
         if not player or not player.alive or player.troops < 2:
             return
             
-        attack_force = player.troops * percentage
-        player.troops -= attack_force
+        # War Tax : Attaquer coûte une pénalité immédiate de 5% de la balance pour éviter le spam
+        war_tax = player.troops * 0.05
+        available_for_attack = player.troops - war_tax
+        
+        attack_force = available_for_attack * percentage
+        player.troops -= (attack_force + war_tax)
         
         ys, xs = np.where(game_state.grid == player_id)
         if len(ys) == 0: 
-            player.troops += attack_force # Remboursement
+            player.troops += attack_force 
             return
             
         if target_x is None or target_y is None:
-            # Expansion Globale
             if len(ys) > 1000:
                 indices = np.random.choice(len(ys), 1000, replace=False)
                 start_queue = deque(zip(xs[indices], ys[indices]))
@@ -36,14 +37,12 @@ class CombatEngine:
                 start_queue = deque(zip(xs, ys))
                 visited = set(zip(xs, ys))
         else:
-            # Expansion Dirigée
             distances = (xs - target_x)**2 + (ys - target_y)**2
             closest_idx = np.argmin(distances)
             front_x, front_y = xs[closest_idx], ys[closest_idx]
             start_queue = deque([(front_x, front_y)])
             visited = set([(front_x, front_y)])
             
-        # On ajoute cette attaque à la liste des attaques en cours
         if not hasattr(game_state, 'active_attacks'):
             game_state.active_attacks = []
             
@@ -59,9 +58,8 @@ class CombatEngine:
         for attack in game_state.active_attacks:
             player = game_state.players.get(attack.player_id)
             if not player or not player.alive:
-                continue # L'attaque s'arrête si le joueur meurt
+                continue
                 
-            # Budget de conquête pour cette frame
             budget_for_frame = attack.speed
             
             while attack.queue and attack.attack_force > 0 and budget_for_frame > 0:
@@ -77,9 +75,17 @@ class CombatEngine:
                             
                             if target_cell == attack.player_id:
                                 attack.queue.append((nx, ny))
+                                
                             elif target_cell == 0:
-                                # Eau
-                                continue
+                                # Eau (Navigation) : Naviguer coûte cher (bateaux)
+                                water_cost = 4.0
+                                if attack.attack_force >= water_cost:
+                                    attack.attack_force -= water_cost
+                                    budget_for_frame -= water_cost
+                                    # L'eau reste de l'eau, mais on propage l'onde à travers !
+                                    # Cela simulera l'envoi de bateaux sans changer la couleur de la carte.
+                                    attack.queue.append((nx, ny))
+                                    
                             elif target_cell == -1:
                                 # Terre neutre
                                 cost = 1.5
@@ -89,12 +95,14 @@ class CombatEngine:
                                     game_state.grid[ny, nx] = attack.player_id
                                     attack.queue.append((nx, ny))
                             else:
-                                # Ennemi
+                                # Joueur Ennemi (Ratio 2:1 strict)
                                 enemy_id = target_cell
                                 enemy = game_state.players.get(enemy_id)
                                 if not enemy or not enemy.alive: continue
                                 
                                 defense_power = enemy.troops / max(1, enemy.land)
+                                
+                                # RATIO 2:1 STRICT (L'attaquant doit payer 2x la défense)
                                 attack_cost = defense_power * 2.0 
                                 
                                 if attack.attack_force >= attack_cost:
@@ -104,15 +112,14 @@ class CombatEngine:
                                     game_state.grid[ny, nx] = attack.player_id
                                     attack.queue.append((nx, ny))
                                 else:
+                                    # Défaite locale : l'attaquant perd sa force, l'ennemi perd la moitié de la force attaquante
                                     enemy.troops -= (attack.attack_force / 2.0)
                                     attack.attack_force = 0
                                     break
                                     
-            # Si l'attaque n'est pas finie, on la garde pour la prochaine frame
             if attack.queue and attack.attack_force > 0:
                 remaining_attacks.append(attack)
             else:
-                # L'attaque est finie, on rembourse les troupes non utilisées
                 player.troops += attack.attack_force
                 
         game_state.active_attacks = remaining_attacks

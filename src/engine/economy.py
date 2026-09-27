@@ -3,8 +3,7 @@ class Economy:
     def step(game_state):
         game_state.tick_count += 1
         
-        # Le cycle de revenu (La jauge verticale dans Territorial.io)
-        # La vitesse dépend de la taille de la map, disons 100 frames pour un cycle
+        # Le cycle de revenu
         game_state.cycle_step += 1
         cycle_complete = False
         if game_state.cycle_step >= 100:
@@ -15,25 +14,25 @@ class Economy:
             if not player.alive:
                 continue
                 
-            # 1. REVENU DES TERRES (Seulement quand le cycle est complet)
+            # 1. REVENU DES TERRES
             if cycle_complete:
-                player.troops += player.land * 1.5 # Le revenu brut
+                player.troops += player.land * 1.5 
                 
-            # 2. INTÉRÊTS COMPOSÉS (À chaque tick)
-            # Dans Territorial.io, l'argent génère de l'argent (jusqu'à une limite)
+            # 2. INTÉRÊTS COMPOSÉS (Équation continue)
             max_troops = player.land * 150
             
-            if player.troops < max_troops:
-                ratio = player.troops / max(1, player.land)
+            if player.troops < max_troops and player.land > 0:
+                ratio = player.troops / max_troops
                 
-                # Modèle simplifié des intérêts de Territorial.io
-                if ratio < 50:
-                    interest_rate = 0.005 # Intérêt fort
-                elif ratio < 100:
-                    interest_rate = 0.002 # Intérêt moyen
-                else:
-                    interest_rate = 0.0005 # INTÉRÊT ROUGE (très faible)
-                    
+                # Équation parabolique inversée : 
+                # L'intérêt est maximum à 0 troupes, et décroît jusqu'à 0 quand ratio = 1.0 (cap max).
+                # Cela reproduit la courbe lisse de Territorial.io.
+                base_interest = 0.007
+                interest_rate = base_interest * (1.0 - (ratio ** 2))
+                
+                # On s'assure que l'intérêt n'est jamais négatif
+                interest_rate = max(0.0, interest_rate)
+                
                 player.troops += player.troops * interest_rate
                 
             # Cap maximal absolu
