@@ -29,16 +29,35 @@ class GameState:
         self.cycle_step = 0 # 0 à 100 pour la barre de revenu
 
     def generate_map(self):
-        # Génère une forme d'île basique : les bords deviennent de l'eau
+        # Génération procédurale d'un continent avec des lacs et des côtes détaillées
         y, x = np.ogrid[-self.height//2:self.height//2, -self.width//2:self.width//2]
-        radius = min(self.width, self.height) // 2 * 0.95
         
-        # Modifie légèrement le rayon avec du bruit très basique pour faire un rivage
+        # Forme de base (île)
+        dist_from_center = np.sqrt(x**2 + y**2)
+        radius = min(self.width, self.height) * 0.45
+        
+        noise = np.zeros_like(dist_from_center)
         angle = np.arctan2(y, x)
-        noise = np.sin(angle * 5) * (self.width * 0.05) + np.cos(angle * 8) * (self.width * 0.05)
         
-        water_mask = x**2 + y**2 > (radius + noise)**2
-        self.grid[water_mask] = 0 # Eau
+        # Octave 1 : Formes globales (péninsules, golfes)
+        noise += np.sin(angle * 3 + x * 0.01) * (radius * 0.25)
+        noise += np.cos(angle * 5 - y * 0.015) * (radius * 0.20)
+        
+        # Octave 2 : Fractures des côtes
+        noise += np.sin(x * 0.04 + y * 0.05) * (radius * 0.12)
+        noise += np.cos(y * 0.06 - x * 0.03) * (radius * 0.12)
+        
+        # Octave 3 : Petits détails
+        noise += np.sin(x * 0.15) * (radius * 0.04)
+        noise += np.cos(y * 0.15) * (radius * 0.04)
+        
+        # Lacs intérieurs
+        lakes = (np.sin(x * 0.03) + np.cos(y * 0.03) + np.sin((x-y)*0.04)) > 1.8
+        
+        # Masque final
+        water_mask = (dist_from_center > (radius + noise)) | lakes
+        
+        self.grid[water_mask] = 0 # 0 = Eau
 
     def add_player(self, player_id, color, name, start_x=None, start_y=None):
         if start_x is None or start_y is None:

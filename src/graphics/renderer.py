@@ -78,13 +78,13 @@ class Camera:
             self.cam_y += wy_before - wy_after
             self.clamp()
 
-        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
-            # Clic droit : début du drag
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (2, 3):
+            # Clic droit ou milieu : début du drag
             self._dragging = True
             self._drag_start_screen = pygame.mouse.get_pos()
             self._drag_start_cam = (self.cam_x, self.cam_y)
 
-        elif event.type == pygame.MOUSEBUTTONUP and event.button == 3:
+        elif event.type == pygame.MOUSEBUTTONUP and event.button in (2, 3):
             self._dragging = False
 
         elif event.type == pygame.MOUSEMOTION and self._dragging:
@@ -210,17 +210,18 @@ class Renderer:
                 np.roll(mask, 1, axis=0) & np.roll(mask, -1, axis=0) &
                 np.roll(mask, 1, axis=1) & np.roll(mask, -1, axis=1)
             )
-            # border shape: (height, width) = (world_h, world_w)
-            # rgb shape: (world_w, world_h) = (width, height)
-            # Pour indexer rgb[x, y], on cherche les x,y dans border[y, x]
-            ys_grid, xs_grid = np.where(border)  # ys=hauteur, xs=largeur dans grid
+            # border shape: (width, height)
+            # rgb shape: (width, height)
+            xs_grid, ys_grid = np.where(border)
+            
             # Filtrer les indices hors-limites (bords de carte)
             valid = (xs_grid < self.world_w) & (ys_grid < self.world_h)
             xs_grid = xs_grid[valid]
             ys_grid = ys_grid[valid]
+            
             # Motif checkerboard
             checker = (xs_grid + ys_grid) % 2 == 0
-            # rgb[x, y] -> rgb[xs_grid, ys_grid]
+            
             rgb[xs_grid[checker], ys_grid[checker]] = BORDER_WHITE
             
         return pygame.surfarray.make_surface(rgb)
